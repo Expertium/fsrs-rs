@@ -1107,7 +1107,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn test_evaluate_with_card_ids_matches_evaluate() -> Result<()> {
         let (items, card_ids) = anki21_sample_file_converted_to_fsrs_with_card_ids();
         for fsrs in [FSRS::default(), FSRS::new(PARAMETERS)?] {

@@ -211,10 +211,6 @@ fn load_and_prepare_data_with_card_ids() -> (Vec<FSRSItem>, Vec<i64>) {
     [pretrain_set, train_set].concat().into_iter().unzip()
 }
 
-fn load_and_prepare_data() -> Vec<FSRSItem> {
-    load_and_prepare_data_with_card_ids().0
-}
-
 fn benchmark_evaluate(c: &mut Criterion) {
     let (items, card_ids) = load_and_prepare_data_with_card_ids();
     // Evaluate uses the FSRS instance's existing parameters.
