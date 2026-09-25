@@ -520,13 +520,29 @@ fn prepare_training_data_with_card_ids(
     (filtered_initialization, trainset)
 }
 
-fn recency_weighted_training_items(items: Vec<TrainingFSRSItem>) -> Vec<WeightedFSRSItem> {
-    let length = (items.len() as f32 - 1.0).max(1.0);
+/// Recency weights for training, in item (review-time) order. FSRS-7 uses srs-benchmark's
+/// formula, `0.0667 + 0.9333 * (i / n)^11.25` (0-based `i`, denominator `n`), computed in f64
+/// like srs-benchmark does. FSRS-6 keeps `0.25 + 0.75 * (i / (n - 1))^3`, which is srs-benchmark's
+/// FSRS-6 formula.
+fn recency_weighted_training_items(
+    items: Vec<TrainingFSRSItem>,
+    model_version: ComputeParametersVersion,
+) -> Vec<WeightedFSRSItem> {
+    let n = items.len();
+    let fsrs6_length = (n as f32 - 1.0).max(1.0);
     items
         .into_iter()
         .enumerate()
         .map(|(idx, item)| WeightedFSRSItem {
-            weight: 0.25 + 0.75 * (idx as f32 / length).powi(3),
+            weight: match model_version {
+                ComputeParametersVersion::Fsrs7 => {
+                    let x = idx as f64 / n.max(1) as f64;
+                    (0.0667 + 0.9333 * x.powf(11.25)) as f32
+                }
+                ComputeParametersVersion::Fsrs6 => {
+                    0.25 + 0.75 * (idx as f32 / fsrs6_length).powi(3)
+                }
+            },
             item: item.item,
             card_id: item.card_id,
         })
@@ -622,21 +638,31 @@ fn compute_parameters_inner(
         validate_training_config(config).inspect_err(|_| finish_progress())?;
     }
     let train_set = normalize_for_model_version(train_set, model_version);
-    let (dataset_for_initialization, train_set) = if card_ids.is_some() {
-        prepare_training_data_with_card_ids(attach_card_ids(train_set, card_ids)?)
-    } else {
-        let (dataset_for_initialization, train_set) = prepare_training_data(train_set);
-        (
-            dataset_for_initialization,
-            train_set
-                .into_iter()
-                .map(|item| TrainingFSRSItem {
-                    item,
-                    card_id: None,
-                })
-                .collect(),
-        )
-    };
+    let (dataset_for_initialization, train_set) =
+        if model_version == ComputeParametersVersion::Fsrs7 {
+            // FSRS-7 trains on every item, as in srs-benchmark: no outlier filter.
+            let train_set = attach_card_ids(train_set, card_ids)?;
+            let dataset_for_initialization = train_set
+                .iter()
+                .filter(|item| item.item.long_term_review_cnt() == 1)
+                .map(|item| item.item.clone())
+                .collect();
+            (dataset_for_initialization, train_set)
+        } else if card_ids.is_some() {
+            prepare_training_data_with_card_ids(attach_card_ids(train_set, card_ids)?)
+        } else {
+            let (dataset_for_initialization, train_set) = prepare_training_data(train_set);
+            (
+                dataset_for_initialization,
+                train_set
+                    .into_iter()
+                    .map(|item| TrainingFSRSItem {
+                        item,
+                        card_id: None,
+                    })
+                    .collect(),
+            )
+        };
     let average_recall =
         calculate_average_recall_from_items(train_set.iter().map(|item| &item.item));
     if train_set.len() < 8 {
@@ -696,7 +722,7 @@ fn compute_parameters_inner(
         },
     );
     apply_training_config(&mut config, training_config, model_version);
-    let mut weighted_train_set = recency_weighted_training_items(train_set);
+    let mut weighted_train_set = recency_weighted_training_items(train_set, model_version);
     weighted_train_set.retain(|item| item.item.reviews.len() <= config.max_seq_len);
 
     if let Some(progress) = &progress {
@@ -805,8 +831,10 @@ pub fn benchmark(
     // save RAM and speed up training
     config.max_seq_len = 64;
     apply_training_config(&mut config, training_config, model_version);
-    let mut weighted_train_set =
-        recency_weighted_training_items(attach_card_ids(train_set, card_ids).unwrap());
+    let mut weighted_train_set = recency_weighted_training_items(
+        attach_card_ids(train_set, card_ids).unwrap(),
+        model_version,
+    );
     weighted_train_set.retain(|item| item.item.reviews.len() <= config.max_seq_len);
     train(
         weighted_train_set,
@@ -1278,7 +1306,6 @@ fn train(
         }
     }
     let total_size = train_set.len();
-    let iterations = (total_size / config.batch_size + 1) * config.num_epochs;
     let fsrs7_batches = (version == ModelVersion::Fsrs7)
         .then(|| build_windowed_batches(&train_set, config.batch_size));
     let fsrs6_batches =
@@ -1289,6 +1316,12 @@ fn train(
     let mut parameters = initial_parameters.to_vec();
     let initial = parameters.clone();
     let mut adam = HostAdam::new(parameters.len());
+    // FSRS-7 anneals over the batches it actually runs, like srs-benchmark's
+    // CosineAnnealingLR(T_max = batches * epochs). FSRS-6 keeps its estimate.
+    let iterations = match version {
+        ModelVersion::Fsrs7 => batch_count * config.num_epochs,
+        ModelVersion::Fsrs6 => (total_size / config.batch_size + 1) * config.num_epochs,
+    };
     let mut scheduler = CosineAnnealingLR::init(iterations as f64, config.learning_rate);
     let mut rng = StdRng::seed_from_u64(config.seed);
     let mut order = (0..batch_count).collect::<Vec<_>>();
