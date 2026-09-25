@@ -1406,6 +1406,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fsrs7_schedule_penalty_matches_srs_benchmark_at_default_parameters() {
+        // srs-benchmark's fsrs7_interval_growth_penalty (models/fsrs_v7_interval_penalty.py:
+        // n_reviews=10, target_dr=0.90, n_newton=7, target_drs=[0.99]) at the default
+        // parameters, in float64 on the float32 defaults: 0.5 * p1 + 0.0015 * p2 and its gradient.
+        let (value, grad) = training_v7::schedule_penalty_value_and_grad(&DEFAULT_PARAMETERS, 1);
+        let rel = |a: f64, b: f64| (a - b).abs() / b.abs();
+        assert!(rel(value, 14.998_915_973_553_904) < 1e-5, "value {value}");
+        for (i, expected) in [
+            (8, -32.576_350_763_017_714),
+            (24, -81.173_724_214_615_59),
+            (27, 178.330_310_865_621_58),
+            (28, -35.765_895_909_966_43),
+            (29, 31.495_477_583_159_32),
+            (31, 37.048_638_305_938_38),
+        ] {
+            assert!(rel(grad[i], expected) < 1e-4, "grad[{i}] = {}", grad[i]);
+        }
+    }
+
+    #[test]
+    fn fsrs7_recency_weights_match_srs_benchmark() {
+        // srs-benchmark FSRS-7: 0.0667 + 0.9333 * (i / n)^11.25, 0-based i, denominator n.
+        let items = (0..4)
+            .map(|_| TrainingFSRSItem {
+                item: FSRSItem { reviews: vec![] },
+                card_id: None,
+            })
+            .collect::<Vec<_>>();
+        let weights = recency_weighted_training_items(items, ComputeParametersVersion::Fsrs7)
+            .iter()
+            .map(|item| item.weight)
+            .collect::<Vec<_>>();
+        let expected = [0.0f64, 0.25, 0.5, 0.75].map(|x| (0.0667 + 0.9333 * x.powf(11.25)) as f32);
+        assert_eq!(weights, expected);
+    }
+
+    #[test]
     fn default_training_config_uses_the_model_version_defaults() {
         for (version, epochs, learning_rate) in [
             (ComputeParametersVersion::Fsrs7, 9, 0.0118),
