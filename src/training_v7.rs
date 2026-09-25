@@ -8,7 +8,7 @@ use crate::simulation::{S_MAX, S_MIN};
 pub(crate) const PARAM_LEN: usize = 34;
 pub(crate) const PENALTY_W_1: f64 = 0.5;
 pub(crate) const PENALTY_W_2: f64 = 0.0015;
-pub(crate) const PENALTY_W_L2: f64 = 0.5;
+pub(crate) const PENALTY_W_L2: f64 = 0.3333;
 pub(crate) const PENALTY_N_REVIEWS: usize = 10;
 pub(crate) const PENALTY_TARGET_DR: f32 = 0.90;
 pub(crate) const PENALTY_TARGET_DRS: [f32; 1] = [0.99];
